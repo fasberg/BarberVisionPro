@@ -146,8 +146,6 @@ class FaceAnalyzer:
 class BarberVisionApp:
     """Контролер біометричного модуля"""
     def __init__(self):
-        self.db_name = 'barber_pro.db'
-        self.check_database()
         # Ініціалізація AI детектора 
         self.detector = mp_face_mesh.FaceMesh(
             max_num_faces=1,
