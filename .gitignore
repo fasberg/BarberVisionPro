@@ -12,3 +12,6 @@ __pycache__/
 bin/
 obj/
 env/
+output/
+dist/
+build/
