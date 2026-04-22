@@ -1,0 +1,14 @@
+# ≤гноруЇмо зв≥ти та фото з обличч€м
+reports/
+backups/
+
+# ≤гноруЇмо базу даних 
+barber_pro.db
+
+# “имчасов≥ файли Python та Visual Studio
+__pycache__/
+*.pyc
+.vs/
+bin/
+obj/
+env/
