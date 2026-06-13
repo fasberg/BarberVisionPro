@@ -3,8 +3,10 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 import sqlite3
 import os
+import sys  
 import cv2
 import biometrics  
+import hashlib  
 from PIL import Image, ImageTk
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -62,7 +64,7 @@ TRANSLATIONS = {
         'manage_users': "Управління акаунтами",
         'cant_del_admin': "Ви не можете видалити адміністратора!",
         'settings_btn': "НАЛАШТУВАННЯ",
-        'cam_lbl': "Номер камери (0, 1, 2):",
+        'cam_lbl': "Доступні відеопристрої в системі:",
         'search_lbl': "Пошук за формою:",
         'about_btn': "ПРО ПРОГРАМУ",
         'about_text': "BarberVision PRO v9.1\nРозроблено студентом гр. 451\nЗакарадзе Давідом\n\nВикористано нейромережі MediaPipe\nдля антропометричного аналізу обличчя.",
@@ -103,7 +105,7 @@ TRANSLATIONS = {
         'manage_users': "User Management",
         'cant_del_admin': "Cannot delete admin!",
         'settings_btn': "SETTINGS",
-        'cam_lbl': "Camera ID (0, 1, 2):",
+        'cam_lbl': "Available system video devices:",
         'search_lbl': "Search by shape:",
         'about_btn': "ABOUT",
         'about_text': "BarberVision PRO v9.1\nDev by David Zakaradze (451)\n\nPowered by MediaPipe AI.",
@@ -138,13 +140,43 @@ class SplashScreen:
 class BarberAppUI:
     def __init__(self, root):
         self.root = root
-        self.lang = 'uk'; self.current_user = ""; self.current_frame_type = 'login'
+        self.lang = 'uk'; self.current_user = ""; self.current_frame_type = 'login'; self.current_user_role = 'master'
         self.init_db(); self.setup_styles(); self.show_login_frame()
 
     def init_db(self):
         conn = sqlite3.connect(DB_NAME); cur = conn.cursor()
         cur.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, login TEXT UNIQUE, password TEXT)")
-        cur.execute("INSERT OR IGNORE INTO users (login, password) VALUES ('admin', '451')")
+        
+        try:
+            cur.execute("ALTER TABLE users ADD COLUMN role TEXT")
+        except sqlite3.OperationalError:
+            pass
+            
+        cur.execute('''CREATE TABLE IF NOT EXISTS client_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date_time TEXT, face_shape TEXT, ratio REAL,
+            screenshot_path TEXT, pdf_path TEXT)''')
+            
+        cur.execute('''CREATE TABLE IF NOT EXISTS recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            shape_name TEXT, haircut_name TEXT, description TEXT, photo_path TEXT)''')
+            
+        hashed_default_password = hashlib.sha256('451'.encode('utf-8')).hexdigest()
+        cur.execute("INSERT OR IGNORE INTO users (login, password, role) VALUES ('admin', ?, 'admin')", (hashed_default_password,))
+        cur.execute("UPDATE users SET role='admin' WHERE login='admin'")
+        
+        cur.execute("SELECT COUNT(*) FROM recommendations")
+        if cur.fetchone()[0] == 0:
+            data = [
+                ('Oval', 'Classic Taper / Pompadour', 'Універсальна форма. Рекомендується зберігати природний баланс, уникаючи занадто довгих чолок.', 'haircuts/oval.jpg'),
+                ('Oblong', 'Textured Crop / Side Part', 'Потрібно візуально зменшити вертикаль. Вибирайте зачіски з більшим об’ємом з боків.', 'haircuts/oblong.jpg'),
+                ('Square', 'Buzz Cut / Crew Cut', 'Сильна щелепа — ваша перевага. Класичні мілітарі-стрижки найкраще підкреслюють мужність.', 'haircuts/square.jpg'),
+                ('Round', 'High Fade / Pompadour', 'Потрібно візуально витягнути обличчя. Додаємо висоти зверху та максимально прибираємо боки.', 'haircuts/round.jpg'),
+                ('Heart', 'Longer Fringe / Side Swept', 'Збалансовуємо широкий лоб. Рекомендується середня довжина, що додає маси знизу.', 'haircuts/heart.jpg'),
+                ('Diamond', 'Messy Quiff / Long Hair', 'Пом’якшуємо вилиці. Добре підходять текстуровані зачіски з пасмами на чоло.', 'haircuts/diamond.jpg')
+            ]
+            cur.executemany('INSERT INTO recommendations (shape_name, haircut_name, description, photo_path) VALUES (?, ?, ?, ?)', data)
+            
         conn.commit(); conn.close()
 
     def setup_styles(self):
@@ -181,10 +213,17 @@ class BarberAppUI:
 
     def check_login(self):
         l, p = self.e_login.get().strip(), self.e_pass.get().strip()
+        hashed_p = hashlib.sha256(p.encode('utf-8')).hexdigest()
+        
         conn = sqlite3.connect(DB_NAME); cur = conn.cursor()
-        cur.execute("SELECT * FROM users WHERE login=? AND password=?", (l, p))
-        if cur.fetchone(): self.show_dashboard(l)
-        else: messagebox.showerror("!", "Error: Invalid Credentials")
+        cur.execute("SELECT role FROM users WHERE login=? AND password=?", (l, hashed_p))
+        row = cur.fetchone()
+        
+        if row: 
+            self.current_user_role = row[0] if row[0] else ("admin" if l.lower() == "admin" else "master")
+            self.show_dashboard(l)
+        else: 
+            messagebox.showerror("!", "Error: Invalid Credentials" if self.lang == 'en' else "Помилка: Невірні дані!")
         conn.close()
 
     def show_register_frame(self):
@@ -202,11 +241,14 @@ class BarberAppUI:
         l, p = self.r_login.get().strip(), self.r_pass.get().strip(); t = TRANSLATIONS[self.lang]
         if l and p:
             try:
+                hashed_p = hashlib.sha256(p.encode('utf-8')).hexdigest()
                 conn = sqlite3.connect(DB_NAME); cur = conn.cursor()
-                cur.execute("INSERT INTO users (login, password) VALUES (?, ?)", (l, p))
+                cur.execute("INSERT INTO users (login, password, role) VALUES (?, ?, 'master')", (l, hashed_p))
                 conn.commit(); conn.close(); messagebox.showinfo("OK", t['reg_success'] + l); self.show_login_frame()
-            except: messagebox.showerror("Error", t['reg_err'])
-        else: messagebox.showwarning("!", t['fill_all'])
+            except: 
+                messagebox.showerror("Error", t['reg_err'])
+        else: 
+            messagebox.showwarning("!", t['fill_all'])
 
     def show_dashboard(self, username):
         self.current_frame_type = 'dash'; self.current_user = username
@@ -224,14 +266,13 @@ class BarberAppUI:
 
         main_f = tk.Frame(self.root, bg="#1e1e1e"); main_f.pack(expand=True, pady=10)
         
-        # КНОПКИ 
         tk.Button(main_f, text=t['new_anal'], font=("Arial", 13, "bold"), width=35, height=2, bg="#00ff00", fg="black", bd=0, command=self.start_camera).pack(pady=8)
         tk.Button(main_f, text=t['history'], font=("Arial", 13, "bold"), width=35, height=2, bg="#333", fg="white", bd=0, command=self.show_history).pack(pady=8)
         tk.Button(main_f, text=t['stats'], font=("Arial", 13, "bold"), width=35, height=2, bg="#333", fg="white", bd=0, command=self.show_stats).pack(pady=8)
         tk.Button(main_f, text=t['settings_btn'], font=("Arial", 13, "bold"), width=35, height=2, bg="#333", fg="white", bd=0, command=self.show_settings).pack(pady=8)
         tk.Button(main_f, text=t['about_btn'], font=("Arial", 13, "bold"), width=35, height=2, bg="#555", fg="white", bd=0, command=lambda: messagebox.showinfo("About", t['about_text'])).pack(pady=8)
         
-        if username.lower() == "admin":
+        if username.lower() == "admin" or (hasattr(self, 'current_user_role') and self.current_user_role == "admin"):
             tk.Button(main_f, text=t['admin_panel'], font=("Arial", 13, "bold"), width=35, height=2, bg="#007acc", fg="white", bd=0, command=self.show_admin_panel).pack(pady=8)
 
         tk.Button(main_f, text=t['logout'], font=("Arial", 13, "bold"), width=35, height=2, bg="#444", fg="white", bd=0, command=self.show_login_frame).pack(pady=20)
@@ -251,58 +292,67 @@ class BarberAppUI:
         f.place(relx=0.5, rely=0.5, anchor="center")
         
         tk.Label(f, text=t['settings_btn'], font=("Arial", 18, "bold"), bg="#2d2d2d", fg="#00ff00").pack(pady=10)
-        
-        # Вибір камери
         tk.Label(f, text=t['cam_lbl'], bg="#2d2d2d", fg="white").pack()
-        cam_entry = tk.Entry(f, width=10, font=("Arial", 12), justify="center")
-        cam_entry.pack(pady=10)
-        cam_entry.insert(0, str(settings.get('camera_id', 0)))
+        
+        # --- ІНТЕЛЕКТУАЛЬНЕ СКАНУВАННЯ СИСТЕМНИХ НАЗВ КАМЕР (ЗАУВАЖЕННЯ ДЕВАЙС МЕНЕДЖЕРА) ---
+        system_cameras = []
+        try:
+            from pygrabber.dshow_graph import FilterGraph
+            system_cameras = FilterGraph().get_input_devices()
+        except:
+            pass # Якщо бібліотека не підвантажилась, спрацює безпечний фолбек
+            
+        if not system_cameras:
+            system_cameras = ["Камера 0 (Вбудована)", "Камера 1 (Зовнішня USB)", "Камера 2 (Додаткова)"]
+            
+        # Створюємо розширений випадаючий список з реальними назвами заліза Windows
+        cam_combo = ttk.Combobox(f, values=system_cameras, state="readonly", width=38, font=("Arial", 10))
+        cam_combo.pack(pady=10)
+        
+        current_cam = settings.get('camera_id', 0)
+        if current_cam < len(system_cameras):
+            cam_combo.current(current_cam)
+        else:
+            cam_combo.current(0)
         
         def save():
             try:
-                save_settings({"camera_id": int(cam_entry.get()), "theme": "Dark"})
+                selected_cam_id = cam_combo.current()
+                save_settings({"camera_id": selected_cam_id, "theme": "Dark"})
                 messagebox.showinfo("OK", t['save_success'])
-            except: 
-                messagebox.showerror("Err", "Digits only!" if self.lang == 'en' else "Тільки цифри!")
+            except Exception as e: 
+                messagebox.showerror("Err", str(e))
         
         tk.Button(f, text=t['save_cam_btn'], bg="#00ff00", font=("Arial", 10, "bold"), 
                   width=25, height=1, command=save).pack(pady=10)
 
-        # --- ЛОГІКА БЕКАПУ ---
         def run_backup():
             try:
-                if not os.path.exists("backups"):
-                    os.makedirs("backups")
-                
+                if not os.path.exists("backups"): os.makedirs("backups")
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 backup_name = f"backups/barber_pro_backup_{timestamp}.db"
-                
                 shutil.copy2(DB_NAME, backup_name)
                 messagebox.showinfo("Backup", t['backup_success'])
             except Exception as e:
                 messagebox.showerror("Error", f"{t['backup_err']} {e}")
 
-        tk.Label(f, text="--- " + ("Система" if self.lang=='uk' else "System") + " ---", bg="#2d2d2d", fg="gray").pack(pady=(20, 5))
-        
-        # Кнопка Бекапу
-        tk.Button(f, text="📂 " + t['backup_btn'], bg="#007acc", fg="white", font=("Arial", 10, "bold"), 
-                  width=25, height=2, command=run_backup).pack(pady=5)
+        if self.current_user.lower() == "admin" or (hasattr(self, 'current_user_role') and self.current_user_role == "admin"):
+            tk.Label(f, text="--- System ---", bg="#2d2d2d", fg="gray").pack(pady=(20, 5))
+            tk.Button(f, text="📂 " + t['backup_btn'], bg="#007acc", fg="white", font=("Arial", 10, "bold"), 
+                      width=25, height=2, command=run_backup).pack(pady=5)
 
     def show_history(self):
         self.clear_window(); t = TRANSLATIONS[self.lang]
         tk.Button(self.root, text="< " + t['back'], font=("Arial", 10, "bold"), bg="#333", fg="white", bd=0, 
                   command=lambda: self.show_dashboard(self.current_user)).pack(anchor="nw", padx=20, pady=20)
         
-        # --- ПАНЕЛЬ КЕРУВАННЯ ---
         ctrl_f = tk.Frame(self.root, bg="#1e1e1e")
         ctrl_f.pack(fill="x", padx=20, pady=10)
         
-        # Пошук
         tk.Label(ctrl_f, text=t['search_lbl'], bg="#1e1e1e", fg="white").pack(side="left")
         search_entry = tk.Entry(ctrl_f, width=15)
         search_entry.pack(side="left", padx=10)
 
-        # Сортування
         tk.Label(ctrl_f, text=t['sort_lbl'], bg="#1e1e1e", fg="white").pack(side="left", padx=(20, 0))
         
         sort_options = {
@@ -312,10 +362,9 @@ class BarberAppUI:
         }
         
         sort_combo = ttk.Combobox(ctrl_f, values=list(sort_options.keys()), state="readonly", width=15)
-        sort_combo.set(list(sort_options.keys())[0]) # За замовчуванням за ID
+        sort_combo.set(list(sort_options.keys())[0])
         sort_combo.pack(side="left", padx=10)
 
-        # --- ТАБЛИЦЯ ---
         tree_f = tk.Frame(self.root, bg="#1e1e1e")
         tree_f.pack(fill="both", expand=True, padx=20)
         
@@ -325,7 +374,6 @@ class BarberAppUI:
         tree.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(tree_f, orient="vertical", command=tree.yview); tree.configure(yscroll=sb.set); sb.pack(side="right", fill="y")
 
-        # --- ЛОГІКА ОНОВЛЕННЯ ДАНИХ ---
         def load_data(*args):
             query = search_entry.get().strip()
             sort_choice = sort_combo.get()
@@ -341,13 +389,10 @@ class BarberAppUI:
                 tree.insert('', 'end', values=(idx, r[1], r[2], r[3]), tags=(r[0], r[4], r[5]))
             conn.close()
 
-        # Прив'язка подій
         search_entry.bind('<KeyRelease>', load_data)
         sort_combo.bind('<<ComboboxSelected>>', load_data)
-        
-        load_data() # Перше завантаження
+        load_data()
 
-        # --- КНОПКИ ДІЙ ---
         btn_frame = tk.Frame(self.root, bg="#1e1e1e"); btn_frame.pack(pady=20)
         
         def open_pdf_file():
@@ -369,7 +414,9 @@ class BarberAppUI:
                 conn.commit(); conn.close(); tree.delete(sel)
 
         tk.Button(btn_frame, text="📄 " + t['open_pdf'], font=("Arial", 11, "bold"), bg="#007acc", fg="white", width=20, height=2, command=open_pdf_file).pack(side="left", padx=10)
-        tk.Button(btn_frame, text=t['del_btn'], font=("Arial", 11, "bold"), bg="#ff4444", fg="white", width=20, height=2, command=delete_hist).pack(side="left", padx=10)
+        
+        if self.current_user.lower() == "admin" or (hasattr(self, 'current_user_role') and self.current_user_role == "admin"):
+            tk.Button(btn_frame, text=t['del_btn'], font=("Arial", 11, "bold"), bg="#ff4444", fg="white", width=20, height=2, command=delete_hist).pack(side="left", padx=10)
 
     def show_stats(self):
         self.clear_window(); t = TRANSLATIONS[self.lang]
